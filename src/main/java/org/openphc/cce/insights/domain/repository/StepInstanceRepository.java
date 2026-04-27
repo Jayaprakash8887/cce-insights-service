@@ -4,12 +4,15 @@ import org.openphc.cce.insights.domain.entity.StepInstance;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
 public interface StepInstanceRepository extends ReadOnlyRepository<StepInstance, UUID> {
 
     List<StepInstance> findByProtocolInstanceId(UUID protocolInstanceId);
+
+    List<StepInstance> findByProtocolInstanceIdIn(Collection<UUID> protocolInstanceIds);
 
     List<StepInstance> findByProtocolInstanceIdOrderByDueDateAsc(UUID protocolInstanceId);
 
@@ -49,14 +52,26 @@ public interface StepInstanceRepository extends ReadOnlyRepository<StepInstance,
             nativeQuery = true)
     List<Object[]> findCompletionFunnel(@Param("protocolDefId") UUID protocolDefId);
 
-    @Query(value = "SELECT el.facility_id, " +
+    @Query(value = "SELECT si.facility_id, " +
             "COUNT(DISTINCT si.id) AS total_steps, " +
             "COUNT(DISTINCT CASE WHEN si.state IN ('COMPLETED','SKIPPED') THEN si.id END) AS completed_steps " +
             "FROM step_instance si " +
-            "JOIN protocol_instance pi ON si.protocol_instance_id = pi.id " +
-            "JOIN event_log el ON el.protocol_instance_id = pi.id " +
-            "WHERE el.facility_id IS NOT NULL " +
-            "GROUP BY el.facility_id",
+            "WHERE si.facility_id IS NOT NULL " +
+            "GROUP BY si.facility_id",
             nativeQuery = true)
     List<Object[]> findStepComplianceByFacility();
+
+    /**
+     * Aggregate patient risk status by facility in a single query.
+     * Returns: facility_id, patient_id, has_missed (bool), has_overdue (bool)
+     */
+    @Query(value = "SELECT si.facility_id, pi.patient_id, " +
+            "BOOL_OR(si.state = 'MISSED') AS has_missed, " +
+            "BOOL_OR(si.state = 'OVERDUE') AS has_overdue " +
+            "FROM step_instance si " +
+            "JOIN protocol_instance pi ON si.protocol_instance_id = pi.id " +
+            "WHERE si.facility_id IS NOT NULL " +
+            "GROUP BY si.facility_id, pi.patient_id",
+            nativeQuery = true)
+    List<Object[]> findPatientRiskByFacility();
 }

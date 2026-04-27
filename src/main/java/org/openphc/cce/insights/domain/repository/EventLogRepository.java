@@ -12,16 +12,29 @@ public interface EventLogRepository extends ReadOnlyRepository<EventLog, UUID> {
 
     List<EventLog> findBySubjectOrderByEventTimeDesc(String subject);
 
+    @Query(value = "SELECT * FROM event_log el " +
+            "WHERE el.subject = :subject " +
+            "AND (CAST(:resourceType AS text) IS NULL OR el.resource_type = :resourceType) " +
+            "AND (CAST(:source AS text) IS NULL OR el.source = :source) " +
+            "AND (CAST(:startDate AS timestamptz) IS NULL OR el.event_time >= :startDate) " +
+            "AND (CAST(:endDate AS timestamptz) IS NULL OR el.event_time <= :endDate) " +
+            "ORDER BY el.event_time DESC LIMIT :limit",
+            nativeQuery = true)
+    List<EventLog> findPatientEventsFiltered(@Param("subject") String subject,
+                                             @Param("resourceType") String resourceType,
+                                             @Param("source") String source,
+                                             @Param("startDate") OffsetDateTime startDate,
+                                             @Param("endDate") OffsetDateTime endDate,
+                                             @Param("limit") int limit);
+
     @Query(value = "SELECT DISTINCT el.facility_id FROM event_log el " +
             "WHERE el.facility_id IS NOT NULL ORDER BY el.facility_id",
             nativeQuery = true)
     List<String> findDistinctFacilityIds();
 
-    @Query(value = "SELECT DISTINCT el.facility_id, " +
-            "el.data->'location'->0->'location'->>'display' AS facility_name " +
-            "FROM event_log el " +
-            "WHERE el.type = 'Encounter' " +
-            "AND el.data->'location'->0->'location'->>'display' IS NOT NULL",
+    @Query(value = "SELECT fs.facility_id, fs.facility_name " +
+            "FROM facility_stats fs " +
+            "WHERE fs.facility_name IS NOT NULL",
             nativeQuery = true)
     List<Object[]> findFacilityNames();
 
@@ -43,27 +56,27 @@ public interface EventLogRepository extends ReadOnlyRepository<EventLog, UUID> {
             nativeQuery = true)
     List<String> findDistinctPractitioners();
 
-    @Query(value = "SELECT el.data->>'resourceType' AS resource_type, COUNT(*) AS event_count " +
+    @Query(value = "SELECT el.resource_type, COUNT(*) AS event_count " +
             "FROM event_log el " +
             "WHERE el.processing_status != 'DUPLICATE' " +
             "AND (CAST(:facilityId AS text) IS NULL OR el.facility_id = :facilityId) " +
             "AND (CAST(:source AS text) IS NULL OR el.source = :source) " +
             "AND (CAST(:startDate AS timestamptz) IS NULL OR el.event_time >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR el.event_time <= :endDate) " +
-            "GROUP BY el.data->>'resourceType' ORDER BY event_count DESC",
+            "GROUP BY el.resource_type ORDER BY event_count DESC",
             nativeQuery = true)
     List<Object[]> countByResourceType(@Param("facilityId") String facilityId,
                                        @Param("source") String source,
                                        @Param("startDate") OffsetDateTime startDate,
                                        @Param("endDate") OffsetDateTime endDate);
 
-    @Query(value = "SELECT el.facility_id, el.data->>'resourceType' AS resource_type, COUNT(*) AS event_count " +
+    @Query(value = "SELECT el.facility_id, el.resource_type, COUNT(*) AS event_count " +
             "FROM event_log el " +
             "WHERE el.facility_id IS NOT NULL " +
             "AND el.processing_status != 'DUPLICATE' " +
             "AND (CAST(:startDate AS timestamptz) IS NULL OR el.event_time >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR el.event_time <= :endDate) " +
-            "GROUP BY el.facility_id, el.data->>'resourceType' " +
+            "GROUP BY el.facility_id, el.resource_type " +
             "ORDER BY el.facility_id, event_count DESC",
             nativeQuery = true)
     List<Object[]> countByFacility(@Param("startDate") OffsetDateTime startDate,
@@ -84,13 +97,13 @@ public interface EventLogRepository extends ReadOnlyRepository<EventLog, UUID> {
             "  el.data->'requester'->>'display', " +
             "  el.data->'performer'->0->'actor'->>'display'" +
             ") AS practitioner_display, " +
-            "el.data->>'resourceType' AS resource_type, COUNT(*) AS event_count " +
+            "el.resource_type, COUNT(*) AS event_count " +
             "FROM event_log el " +
             "WHERE el.processing_status != 'DUPLICATE' " +
             "AND (CAST(:facilityId AS text) IS NULL OR el.facility_id = :facilityId) " +
             "AND (CAST(:startDate AS timestamptz) IS NULL OR el.event_time >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR el.event_time <= :endDate) " +
-            "GROUP BY practitioner_ref, practitioner_display, resource_type " +
+            "GROUP BY practitioner_ref, practitioner_display, el.resource_type " +
             "HAVING COALESCE(" +
             "  el.data->'participant'->0->'individual'->>'reference', " +
             "  el.data->'performer'->0->>'reference', " +
@@ -104,13 +117,13 @@ public interface EventLogRepository extends ReadOnlyRepository<EventLog, UUID> {
                                        @Param("startDate") OffsetDateTime startDate,
                                        @Param("endDate") OffsetDateTime endDate);
 
-    @Query(value = "SELECT el.source, el.data->>'resourceType' AS resource_type, COUNT(*) AS event_count " +
+    @Query(value = "SELECT el.source, el.resource_type, COUNT(*) AS event_count " +
             "FROM event_log el " +
             "WHERE el.processing_status != 'DUPLICATE' " +
             "AND (CAST(:facilityId AS text) IS NULL OR el.facility_id = :facilityId) " +
             "AND (CAST(:startDate AS timestamptz) IS NULL OR el.event_time >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR el.event_time <= :endDate) " +
-            "GROUP BY el.source, el.data->>'resourceType' " +
+            "GROUP BY el.source, el.resource_type " +
             "ORDER BY el.source, event_count DESC",
             nativeQuery = true)
     List<Object[]> countBySource(@Param("facilityId") String facilityId,
@@ -118,15 +131,15 @@ public interface EventLogRepository extends ReadOnlyRepository<EventLog, UUID> {
                                  @Param("endDate") OffsetDateTime endDate);
 
     @Query(value = "SELECT DATE_TRUNC(:interval, el.event_time) AS period, " +
-            "el.data->>'resourceType' AS resource_type, COUNT(*) AS event_count " +
+            "el.resource_type, COUNT(*) AS event_count " +
             "FROM event_log el " +
             "WHERE el.processing_status != 'DUPLICATE' " +
             "AND (CAST(:facilityId AS text) IS NULL OR el.facility_id = :facilityId) " +
             "AND (CAST(:source AS text) IS NULL OR el.source = :source) " +
-            "AND (CAST(:resourceType AS text) IS NULL OR el.data->>'resourceType' = :resourceType) " +
+            "AND (CAST(:resourceType AS text) IS NULL OR el.resource_type = :resourceType) " +
             "AND (CAST(:startDate AS timestamptz) IS NULL OR el.event_time >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR el.event_time <= :endDate) " +
-            "GROUP BY period, el.data->>'resourceType' ORDER BY period",
+            "GROUP BY period, el.resource_type ORDER BY period",
             nativeQuery = true)
     List<Object[]> findEventTrends(@Param("interval") String interval,
                                    @Param("facilityId") String facilityId,
@@ -159,39 +172,33 @@ public interface EventLogRepository extends ReadOnlyRepository<EventLog, UUID> {
                                                   @Param("startDate") OffsetDateTime startDate,
                                                   @Param("endDate") OffsetDateTime endDate);
 
-    @Query(value = "SELECT el.facility_id, " +
-            "COUNT(DISTINCT pi.id) AS total_enrollments, " +
-            "COUNT(DISTINCT el.id) AS total_events " +
-            "FROM event_log el " +
-            "JOIN protocol_instance pi ON el.protocol_instance_id = pi.id " +
-            "WHERE el.facility_id IS NOT NULL " +
-            "AND (CAST(:protocolDefId AS uuid) IS NULL OR pi.protocol_definition_id = :protocolDefId) " +
-            "GROUP BY el.facility_id",
+    @Query(value = "SELECT fs.facility_id, " +
+            "fs.total_enrollments, " +
+            "fs.total_events " +
+            "FROM facility_stats fs " +
+            "WHERE fs.facility_id IS NOT NULL",
             nativeQuery = true)
     List<Object[]> findFacilityEventCounts(@Param("protocolDefId") UUID protocolDefId);
 
-    @Query(value = "SELECT el.facility_id, " +
-            "COUNT(DISTINCT pi.patient_id) AS total_patients " +
-            "FROM protocol_instance pi " +
-            "JOIN event_log el ON el.protocol_instance_id = pi.id " +
-            "WHERE pi.status = 'ACTIVE' AND el.facility_id IS NOT NULL " +
+    @Query(value = "SELECT pf.facility_id, " +
+            "COUNT(DISTINCT pf.patient_id) AS total_patients " +
+            "FROM patient_facility pf " +
+            "JOIN protocol_instance pi ON pi.patient_id = pf.patient_id " +
+            "WHERE pi.status = 'ACTIVE' " +
             "AND (CAST(:protocolDefId AS uuid) IS NULL OR pi.protocol_definition_id = :protocolDefId) " +
-            "GROUP BY el.facility_id",
+            "GROUP BY pf.facility_id",
             nativeQuery = true)
     List<Object[]> findActivePatientsByFacility(@Param("protocolDefId") UUID protocolDefId);
 
-    @Query(value = "SELECT DISTINCT el.facility_id, pi.patient_id " +
-            "FROM event_log el " +
-            "JOIN protocol_instance pi ON el.protocol_instance_id = pi.id " +
-            "WHERE el.facility_id IS NOT NULL",
+    @Query(value = "SELECT pf.facility_id, pf.patient_id " +
+            "FROM patient_facility pf",
             nativeQuery = true)
     List<Object[]> findFacilityPatientMapping();
 
-    @Query(value = "SELECT DISTINCT el.facility_id, pi.patient_id, pi.id AS protocol_instance_id " +
-            "FROM event_log el " +
-            "JOIN protocol_instance pi ON el.protocol_instance_id = pi.id " +
-            "WHERE el.facility_id IS NOT NULL " +
-            "AND el.facility_id = CAST(:facilityId AS text)",
+    @Query(value = "SELECT pf.facility_id, pf.patient_id, pi.id AS protocol_instance_id " +
+            "FROM patient_facility pf " +
+            "JOIN protocol_instance pi ON pi.patient_id = pf.patient_id " +
+            "WHERE pf.facility_id = CAST(:facilityId AS text)",
             nativeQuery = true)
     List<Object[]> findPatientsByFacility(@Param("facilityId") String facilityId);
 }

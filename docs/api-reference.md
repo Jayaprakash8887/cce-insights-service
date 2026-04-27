@@ -453,7 +453,7 @@ Deviation trends aggregated by time period.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `interval` | String | `weekly` | Aggregation: `daily`, `weekly`, `monthly` |
+| `interval` | String | `weekly` | Aggregation: `daily`, `weekly`, `monthly`. Invalid values return 400 Bad Request. |
 | `facilityId` | String | — | Filter by facility |
 | `protocolDefinitionId` | UUID | — | Filter by protocol |
 | `startDate` | ISO 8601 | 30 days ago | Trend start date |

@@ -18,8 +18,8 @@ public class EventVolumeController {
 
     @GetMapping("/summary")
     public ResponseEntity<ApiResponse<EventVolumeSummaryDto>> getSummary(
-            @RequestParam(required = false) String facilityId,
-            @RequestParam(required = false) String source,
+            @RequestParam(required = false) String facilityId,   // TODO: wire to service layer
+            @RequestParam(required = false) String source,       // TODO: wire to service layer
             @RequestParam(required = false) OffsetDateTime startDate,
             @RequestParam(required = false) OffsetDateTime endDate) {
         EventVolumeSummaryDto summary = eventVolumeService.getSummary(startDate, endDate);

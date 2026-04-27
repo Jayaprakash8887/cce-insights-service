@@ -16,6 +16,8 @@ import java.util.UUID;
 @Getter
 public class InboundEvent {
 
+    protected InboundEvent() {}
+
     @Id
     private UUID id;
 

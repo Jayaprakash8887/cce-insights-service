@@ -41,6 +41,9 @@ public class Deviation {
     @JoinColumn(name = "step_instance_id", insertable = false, updatable = false)
     private StepInstance stepInstance;
 
+    @Column(name = "facility_id")
+    private String facilityId;
+
     protected Deviation() {
     }
 }

@@ -4,14 +4,26 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.Set;
 
 public final class DateUtil {
 
+    private static final Set<String> VALID_INTERVALS = Set.of("daily", "weekly", "monthly");
+
     private DateUtil() {}
 
+    /**
+     * Validate and map a user-supplied interval to a PostgreSQL DATE_TRUNC granularity.
+     * Only allows 'daily', 'weekly', 'monthly' — defaults to 'week' for null.
+     */
     public static String mapInterval(String interval) {
         if (interval == null) return "week";
-        return switch (interval.toLowerCase()) {
+        String lower = interval.toLowerCase();
+        if (!VALID_INTERVALS.contains(lower)) {
+            throw new IllegalArgumentException("Invalid interval: " + interval
+                    + ". Allowed values: daily, weekly, monthly");
+        }
+        return switch (lower) {
             case "daily" -> "day";
             case "weekly" -> "week";
             case "monthly" -> "month";

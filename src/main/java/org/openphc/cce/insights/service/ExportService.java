@@ -2,9 +2,9 @@ package org.openphc.cce.insights.service;
 
 import lombok.RequiredArgsConstructor;
 import org.openphc.cce.insights.domain.entity.ProtocolInstance;
-import org.openphc.cce.insights.domain.entity.StepInstance;
+import org.openphc.cce.insights.domain.entity.ProtocolInstanceStats;
 import org.openphc.cce.insights.domain.repository.ProtocolInstanceRepository;
-import org.openphc.cce.insights.domain.repository.StepInstanceRepository;
+import org.openphc.cce.insights.domain.repository.ProtocolInstanceStatsRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -14,6 +14,8 @@ import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -21,7 +23,7 @@ import java.util.*;
 public class ExportService {
 
     private final ProtocolInstanceRepository protocolInstanceRepository;
-    private final StepInstanceRepository stepInstanceRepository;
+    private final ProtocolInstanceStatsRepository protocolInstanceStatsRepository;
 
     public void writeComplianceCsv(UUID protocolDefinitionId, String facilityId,
                                      OffsetDateTime startDate, OffsetDateTime endDate,
@@ -37,14 +39,16 @@ public class ExportService {
             instances = protocolInstanceRepository.findAll();
         }
 
+        List<UUID> ids = instances.stream().map(ProtocolInstance::getId).toList();
+        Map<UUID, ProtocolInstanceStats> statsMap = protocolInstanceStatsRepository.findAllByProtocolInstanceIdIn(ids)
+                .stream().collect(Collectors.toMap(ProtocolInstanceStats::getProtocolInstanceId, Function.identity()));
+
         for (ProtocolInstance pi : instances) {
-            List<StepInstance> steps = stepInstanceRepository.findByProtocolInstanceId(pi.getId());
-            long total = steps.size();
-            long completed = steps.stream().filter(s -> s.getCompletedAt() != null).count();
-            long overdue = steps.stream()
-                    .filter(s -> s.getState().name().equals("OVERDUE")).count();
-            long missed = steps.stream()
-                    .filter(s -> s.getState().name().equals("MISSED")).count();
+            ProtocolInstanceStats s = statsMap.get(pi.getId());
+            long total = s != null ? s.getTotalSteps() : 0;
+            long completed = s != null ? s.getCompletedSteps() : 0;
+            long overdue = s != null ? s.getOverdueSteps() : 0;
+            long missed = s != null ? s.getMissedSteps() : 0;
             double rate = total > 0 ? Math.round((double) completed / total * 100.0) / 100.0 : 0;
 
             writer.printf("%s,%s,%s,%s,%d,%d,%d,%d,%.2f%n",
@@ -66,15 +70,17 @@ public class ExportService {
             instances = protocolInstanceRepository.findAll();
         }
 
+        List<UUID> ids = instances.stream().map(ProtocolInstance::getId).toList();
+        Map<UUID, ProtocolInstanceStats> statsMap = protocolInstanceStatsRepository.findAllByProtocolInstanceIdIn(ids)
+                .stream().collect(Collectors.toMap(ProtocolInstanceStats::getProtocolInstanceId, Function.identity()));
+
         List<Map<String, Object>> results = new ArrayList<>();
         for (ProtocolInstance pi : instances) {
-            List<StepInstance> steps = stepInstanceRepository.findByProtocolInstanceId(pi.getId());
-            long total = steps.size();
-            long completed = steps.stream().filter(s -> s.getCompletedAt() != null).count();
-            long overdue = steps.stream()
-                    .filter(s -> s.getState().name().equals("OVERDUE")).count();
-            long missed = steps.stream()
-                    .filter(s -> s.getState().name().equals("MISSED")).count();
+            ProtocolInstanceStats s = statsMap.get(pi.getId());
+            long total = s != null ? s.getTotalSteps() : 0;
+            long completed = s != null ? s.getCompletedSteps() : 0;
+            long overdue = s != null ? s.getOverdueSteps() : 0;
+            long missed = s != null ? s.getMissedSteps() : 0;
             double rate = total > 0 ? Math.round((double) completed / total * 100.0) / 100.0 : 0;
 
             Map<String, Object> row = new LinkedHashMap<>();

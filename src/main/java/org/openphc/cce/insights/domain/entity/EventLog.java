@@ -46,6 +46,9 @@ public class EventLog {
     @Column(name = "facility_id")
     private String facilityId;
 
+    @Column(name = "resource_type")
+    private String resourceType;
+
     @Column(name = "protocol_instance_id")
     private UUID protocolInstanceId;
 

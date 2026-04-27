@@ -2,12 +2,9 @@ package org.openphc.cce.insights.service;
 
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
-import org.openphc.cce.insights.domain.entity.Deviation;
 import org.openphc.cce.insights.domain.entity.ProtocolDefinition;
 import org.openphc.cce.insights.domain.entity.ProtocolInstance;
-import org.openphc.cce.insights.domain.entity.StepInstance;
-import org.openphc.cce.insights.domain.enums.DeviationType;
-import org.openphc.cce.insights.domain.enums.StepState;
+import org.openphc.cce.insights.domain.entity.ProtocolInstanceStats;
 import org.openphc.cce.insights.domain.repository.*;
 import org.openphc.cce.insights.web.dto.ComplianceSummaryDto;
 import org.openphc.cce.insights.web.dto.FacilitySummaryDto;
@@ -17,6 +14,7 @@ import org.springframework.cache.annotation.Cacheable;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -26,8 +24,7 @@ public class ComplianceSummaryService {
 
     private final ProtocolDefinitionRepository protocolDefinitionRepository;
     private final ProtocolInstanceRepository protocolInstanceRepository;
-    private final StepInstanceRepository stepInstanceRepository;
-    private final DeviationRepository deviationRepository;
+    private final ProtocolInstanceStatsRepository protocolInstanceStatsRepository;
     private final EventLogRepository eventLogRepository;
 
     @Cacheable(value = "analytics", key = "'compliance-' + #protocolDefinitionId")
@@ -44,42 +41,30 @@ public class ComplianceSummaryService {
         Map<String, Long> statusBreakdown = instances.stream()
                 .collect(Collectors.groupingBy(pi -> pi.getStatus().name().toLowerCase(), Collectors.counting()));
 
+        List<ProtocolInstanceStats> statsList = protocolInstanceStatsRepository.findByProtocolDefinitionId(protocolDefinitionId);
+
         long totalSteps = 0, completed = 0, onTime = 0, late = 0, early = 0, overdue = 0, missed = 0, pending = 0;
         long totalDeviations = 0, overdueDeviations = 0, missedDeviations = 0, orderViolationDeviations = 0;
 
-        for (ProtocolInstance pi : instances) {
-            List<StepInstance> steps = stepInstanceRepository.findByProtocolInstanceId(pi.getId());
-            totalSteps += steps.size();
-            for (StepInstance si : steps) {
-                switch (si.getState()) {
-                    case COMPLETED -> {
-                        completed++;
-                        if (si.getCompletionStatus() != null) {
-                            switch (si.getCompletionStatus()) {
-                                case EARLY -> early++;
-                                case ON_TIME -> onTime++;
-                                case LATE -> late++;
-                            }
-                        }
-                    }
-                    case OVERDUE -> overdue++;
-                    case MISSED -> missed++;
-                    case SKIPPED -> completed++;
-                    case PENDING, DUE -> pending++;
-                }
-            }
-            List<Deviation> deviations = deviationRepository.findByProtocolInstanceId(pi.getId());
-            totalDeviations += deviations.size();
-            for (Deviation d : deviations) {
-                switch (d.getDeviationType()) {
-                    case OVERDUE -> overdueDeviations++;
-                    case MISSED -> missedDeviations++;
-                    case ORDER_VIOLATION -> orderViolationDeviations++;
-                }
-            }
+        for (ProtocolInstanceStats s : statsList) {
+            totalSteps += s.getTotalSteps();
+            completed += s.getCompletedSteps();
+            onTime += s.getOnTimeSteps();
+            late += s.getLateSteps();
+            early += s.getEarlySteps();
+            overdue += s.getOverdueSteps();
+            missed += s.getMissedSteps();
+            pending += s.getPendingSteps();
+            totalDeviations += s.getTotalDeviations();
+            overdueDeviations += s.getOverdueDeviations();
+            missedDeviations += s.getMissedDeviations();
+            orderViolationDeviations += s.getOrderViolationDeviations();
         }
 
-        double complianceRate = totalSteps > 0 ? (double) completed / totalSteps : 0.0;
+        // Count skipped as completed for rate calculation
+        long skipped = statsList.stream().mapToInt(ProtocolInstanceStats::getSkippedSteps).sum();
+        long effectiveCompleted = completed + skipped;
+        double complianceRate = totalSteps > 0 ? (double) effectiveCompleted / totalSteps : 0.0;
 
         return ComplianceSummaryDto.builder()
                 .protocolDefinitionId(protocolDefinitionId)
@@ -88,7 +73,7 @@ public class ComplianceSummaryService {
                 .statusBreakdown(statusBreakdown)
                 .complianceRate(Math.round(complianceRate * 100.0) / 100.0)
                 .stepMetrics(ComplianceSummaryDto.StepMetrics.builder()
-                        .totalSteps(totalSteps).completed(completed).onTime(onTime)
+                        .totalSteps(totalSteps).completed(effectiveCompleted).onTime(onTime)
                         .late(late).early(early).overdue(overdue).missed(missed).pending(pending)
                         .build())
                 .deviationCount(totalDeviations)
@@ -103,21 +88,24 @@ public class ComplianceSummaryService {
                         "Protocol definition not found: " + protocolDefinitionId));
 
         List<ProtocolInstance> instances = protocolInstanceRepository.findByProtocolDefinitionId(protocolDefinitionId);
+        List<UUID> instanceIds = instances.stream().map(ProtocolInstance::getId).toList();
+        Map<UUID, ProtocolInstanceStats> statsMap = protocolInstanceStatsRepository.findAllByProtocolInstanceIdIn(instanceIds)
+                .stream().collect(Collectors.toMap(ProtocolInstanceStats::getProtocolInstanceId, Function.identity()));
+
         List<PatientComplianceDto> results = new ArrayList<>();
 
         for (ProtocolInstance pi : instances) {
-            List<StepInstance> steps = stepInstanceRepository.findByProtocolInstanceId(pi.getId());
-            long completedCount = steps.stream()
-                    .filter(s -> s.getState() == StepState.COMPLETED || s.getState() == StepState.SKIPPED)
-                    .count();
-            double rate = steps.isEmpty() ? 0.0 : (double) completedCount / steps.size();
-            String category = computeCategory(steps);
+            ProtocolInstanceStats stats = statsMap.get(pi.getId());
+            int total = stats != null ? stats.getTotalSteps() : 0;
+            int comp = stats != null ? stats.getCompletedSteps() + stats.getSkippedSteps() : 0;
+            double rate = total > 0 ? (double) comp / total : 0.0;
+            String category = computeCategory(stats);
 
             if (statusFilter != null && !statusFilter.equalsIgnoreCase(category)) {
                 continue;
             }
 
-            long activeDevs = deviationRepository.findByProtocolInstanceId(pi.getId()).size();
+            long activeDevs = stats != null ? stats.getTotalDeviations() : 0;
 
             results.add(PatientComplianceDto.builder()
                     .patientId(pi.getPatientId())
@@ -127,8 +115,8 @@ public class ComplianceSummaryService {
                     .status(pi.getStatus().name().toLowerCase())
                     .complianceRate(Math.round(rate * 100.0) / 100.0)
                     .complianceCategory(category)
-                    .stepsCompleted(completedCount)
-                    .totalSteps(steps.size())
+                    .stepsCompleted(comp)
+                    .totalSteps(total)
                     .activeDeviations(activeDevs)
                     .build());
 
@@ -139,7 +127,6 @@ public class ComplianceSummaryService {
 
     @Cacheable(value = "analytics", key = "'facility-' + #facilityId")
     public FacilitySummaryDto getFacilityComplianceSummary(String facilityId) {
-        // Get protocol instances belonging to this facility via event_log
         List<Object[]> rows = eventLogRepository.findPatientsByFacility(facilityId);
         Set<UUID> facilityInstanceIds = new HashSet<>();
         Set<String> patients = new LinkedHashSet<>();
@@ -150,9 +137,12 @@ public class ComplianceSummaryService {
 
         List<ProtocolInstance> facilityInstances = facilityInstanceIds.isEmpty()
                 ? Collections.emptyList()
-                : protocolInstanceRepository.findAll().stream()
-                        .filter(pi -> facilityInstanceIds.contains(pi.getId()))
-                        .collect(Collectors.toList());
+                : protocolInstanceRepository.findAllById(facilityInstanceIds);
+
+        Map<UUID, ProtocolInstanceStats> statsMap = facilityInstanceIds.isEmpty()
+                ? Collections.emptyMap()
+                : protocolInstanceStatsRepository.findAllByProtocolInstanceIdIn(facilityInstanceIds)
+                        .stream().collect(Collectors.toMap(ProtocolInstanceStats::getProtocolInstanceId, Function.identity()));
 
         Map<UUID, List<ProtocolInstance>> byProtocol = facilityInstances.stream()
                 .collect(Collectors.groupingBy(ProtocolInstance::getProtocolDefinitionId));
@@ -167,10 +157,12 @@ public class ComplianceSummaryService {
             List<ProtocolInstance> pInstances = entry.getValue();
             long pCompleted = 0, pTotal = 0, activeDevs = 0;
             for (ProtocolInstance pi : pInstances) {
-                List<StepInstance> steps = stepInstanceRepository.findByProtocolInstanceId(pi.getId());
-                pTotal += steps.size();
-                pCompleted += steps.stream().filter(s -> s.getCompletedAt() != null).count();
-                activeDevs += deviationRepository.findByProtocolInstanceId(pi.getId()).size();
+                ProtocolInstanceStats stats = statsMap.get(pi.getId());
+                if (stats != null) {
+                    pTotal += stats.getTotalSteps();
+                    pCompleted += stats.getCompletedSteps();
+                    activeDevs += stats.getTotalDeviations();
+                }
             }
             totalCompleted += pCompleted;
             totalSteps += pTotal;
@@ -196,11 +188,10 @@ public class ComplianceSummaryService {
                 .build();
     }
 
-    private String computeCategory(List<StepInstance> steps) {
-        boolean hasMissed = steps.stream().anyMatch(s -> s.getState() == StepState.MISSED);
-        if (hasMissed) return "non_compliant";
-        boolean hasOverdue = steps.stream().anyMatch(s -> s.getState() == StepState.OVERDUE);
-        if (hasOverdue) return "at_risk";
+    private String computeCategory(ProtocolInstanceStats stats) {
+        if (stats == null) return "on_track";
+        if (stats.getMissedSteps() > 0) return "non_compliant";
+        if (stats.getOverdueSteps() > 0) return "at_risk";
         return "on_track";
     }
 

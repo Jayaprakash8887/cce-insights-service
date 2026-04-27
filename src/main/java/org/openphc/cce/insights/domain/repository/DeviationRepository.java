@@ -19,14 +19,12 @@ public interface DeviationRepository extends ReadOnlyRepository<Deviation, UUID>
 
     @Query(value = "SELECT d.id, pi.patient_id, d.protocol_instance_id, pi.protocol_canonical, " +
             "d.step_instance_id, si.action_id, d.deviation_type, d.detected_at, " +
-            "(SELECT el.facility_id FROM event_log el WHERE el.protocol_instance_id = pi.id LIMIT 1) AS facility_id " +
+            "d.facility_id " +
             "FROM deviation d " +
             "JOIN protocol_instance pi ON d.protocol_instance_id = pi.id " +
             "JOIN step_instance si ON d.step_instance_id = si.id " +
             "WHERE (CAST(:deviationType AS text) IS NULL OR d.deviation_type = :deviationType) " +
-            "AND (CAST(:facilityId AS text) IS NULL OR EXISTS (" +
-            "  SELECT 1 FROM event_log el WHERE el.protocol_instance_id = pi.id " +
-            "  AND el.facility_id = :facilityId)) " +
+            "AND (CAST(:facilityId AS text) IS NULL OR d.facility_id = :facilityId) " +
             "AND (CAST(:startDate AS timestamptz) IS NULL OR d.detected_at >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR d.detected_at <= :endDate) " +
             "ORDER BY d.detected_at DESC LIMIT :lim",
@@ -42,9 +40,7 @@ public interface DeviationRepository extends ReadOnlyRepository<Deviation, UUID>
             "FROM deviation d " +
             "WHERE (CAST(:startDate AS timestamptz) IS NULL OR d.detected_at >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR d.detected_at <= :endDate) " +
-            "AND (CAST(:facilityId AS text) IS NULL OR EXISTS (" +
-            "  SELECT 1 FROM event_log el WHERE el.protocol_instance_id = d.protocol_instance_id " +
-            "  AND el.facility_id = :facilityId)) " +
+            "AND (CAST(:facilityId AS text) IS NULL OR d.facility_id = :facilityId) " +
             "GROUP BY period, d.deviation_type ORDER BY period",
             nativeQuery = true)
     List<Object[]> findDeviationTrends(@Param("interval") String interval,
@@ -103,9 +99,7 @@ public interface DeviationRepository extends ReadOnlyRepository<Deviation, UUID>
             "COUNT(DISTINCT d.step_instance_id) AS affected_steps " +
             "FROM deviation d " +
             "JOIN protocol_instance pi ON d.protocol_instance_id = pi.id " +
-            "WHERE (CAST(:facilityId AS text) IS NULL OR EXISTS (" +
-            "  SELECT 1 FROM event_log el WHERE el.protocol_instance_id = pi.id " +
-            "  AND el.facility_id = :facilityId)) " +
+            "WHERE (CAST(:facilityId AS text) IS NULL OR d.facility_id = :facilityId) " +
             "AND (CAST(:startDate AS timestamptz) IS NULL OR d.detected_at >= :startDate) " +
             "AND (CAST(:endDate AS timestamptz) IS NULL OR d.detected_at <= :endDate) " +
             "GROUP BY pi.patient_id " +
@@ -117,12 +111,10 @@ public interface DeviationRepository extends ReadOnlyRepository<Deviation, UUID>
                                                @Param("startDate") OffsetDateTime startDate,
                                                @Param("endDate") OffsetDateTime endDate);
 
-    @Query(value = "SELECT el.facility_id, COUNT(DISTINCT d.id) AS deviation_count " +
+    @Query(value = "SELECT d.facility_id, COUNT(DISTINCT d.id) AS deviation_count " +
             "FROM deviation d " +
-            "JOIN protocol_instance pi ON d.protocol_instance_id = pi.id " +
-            "JOIN event_log el ON el.protocol_instance_id = pi.id " +
-            "WHERE el.facility_id IS NOT NULL " +
-            "GROUP BY el.facility_id",
+            "WHERE d.facility_id IS NOT NULL " +
+            "GROUP BY d.facility_id",
             nativeQuery = true)
     List<Object[]> countDeviationsByFacility();
 }

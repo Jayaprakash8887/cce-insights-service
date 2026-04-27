@@ -1,9 +1,8 @@
 package org.openphc.cce.insights.service;
 
 import lombok.RequiredArgsConstructor;
-import org.openphc.cce.insights.domain.repository.DeviationRepository;
-import org.openphc.cce.insights.domain.repository.EventLogRepository;
-import org.openphc.cce.insights.domain.repository.StepInstanceRepository;
+import org.openphc.cce.insights.domain.entity.FacilityStats;
+import org.openphc.cce.insights.domain.repository.FacilityStatsRepository;
 import org.openphc.cce.insights.web.dto.FacilityRankingDto;
 import org.springframework.stereotype.Service;
 import org.springframework.cache.annotation.Cacheable;
@@ -18,71 +17,26 @@ import java.util.stream.Collectors;
 @Transactional(readOnly = true)
 public class FacilityRankingService {
 
-    private final EventLogRepository eventLogRepository;
-    private final DeviationRepository deviationRepository;
-    private final StepInstanceRepository stepInstanceRepository;
+    private final FacilityStatsRepository facilityStatsRepository;
 
     @Cacheable(value = "analytics", key = "'rankings-' + #sortBy + '-' + #order + '-' + #limit + '-' + #startDate + '-' + #endDate")
     public List<FacilityRankingDto> getRankings(OffsetDateTime startDate, OffsetDateTime endDate,
                                                  String sortBy, String order, int limit) {
-        List<Object[]> facilityEvents = eventLogRepository.findFacilityEventCounts(null);
+        // TODO: startDate/endDate are accepted but not applied — facility_stats is a materialized view
+        //       that aggregates all-time data. Date filtering would require a parameterized query/view.
+        List<FacilityStats> allStats = facilityStatsRepository.findAll();
 
-        // Build facility name lookup
-        Map<String, String> facilityNameMap = new LinkedHashMap<>();
-        for (Object[] row : eventLogRepository.findFacilityNames()) {
-            facilityNameMap.put((String) row[0], (String) row[1]);
-        }
-
-        Map<String, Long> eventCountMap = new LinkedHashMap<>();
-        Map<String, Long> activePatientMap = new LinkedHashMap<>();
-
-        for (Object[] row : facilityEvents) {
-            String facilityId = (String) row[0];
-            eventCountMap.put(facilityId, ((Number) row[2]).longValue());
-        }
-
-        List<Object[]> activePatients = eventLogRepository.findActivePatientsByFacility(null);
-        for (Object[] row : activePatients) {
-            activePatientMap.put((String) row[0], ((Number) row[1]).longValue());
-        }
-
-        List<Object[]> deviationRows = deviationRepository.countDeviationsByFacility();
-        Map<String, Long> deviationCountMap = new LinkedHashMap<>();
-        for (Object[] row : deviationRows) {
-            deviationCountMap.put((String) row[0], ((Number) row[1]).longValue());
-        }
-
-        // Step-based compliance: completed+skipped / total steps per facility
-        List<Object[]> stepComplianceRows = stepInstanceRepository.findStepComplianceByFacility();
-        Map<String, Long> totalStepsMap = new LinkedHashMap<>();
-        Map<String, Long> completedStepsMap = new LinkedHashMap<>();
-        for (Object[] row : stepComplianceRows) {
-            String facilityId = (String) row[0];
-            totalStepsMap.put(facilityId, ((Number) row[1]).longValue());
-            completedStepsMap.put(facilityId, ((Number) row[2]).longValue());
-        }
-
-        // Collect all known facility IDs from all sources
-        Set<String> allFacilities = new LinkedHashSet<>();
-        allFacilities.addAll(eventCountMap.keySet());
-        allFacilities.addAll(totalStepsMap.keySet());
-
-        List<FacilityRankingDto> rankings = allFacilities.stream().map(facilityId -> {
-            long events = eventCountMap.getOrDefault(facilityId, 0L);
-            long patients = activePatientMap.getOrDefault(facilityId, 0L);
-            long deviations = deviationCountMap.getOrDefault(facilityId, 0L);
-            long totalSteps = totalStepsMap.getOrDefault(facilityId, 0L);
-            long completedSteps = completedStepsMap.getOrDefault(facilityId, 0L);
-            double complianceRate = totalSteps > 0
-                    ? Math.round((double) completedSteps / totalSteps * 1000.0) / 10.0
+        List<FacilityRankingDto> rankings = allStats.stream().map(fs -> {
+            double complianceRate = fs.getTotalSteps() > 0
+                    ? Math.round((double) fs.getCompletedSteps() / fs.getTotalSteps() * 1000.0) / 10.0
                     : 100.0;
 
             return FacilityRankingDto.builder()
-                    .facilityId(facilityId)
-                    .facilityName(facilityNameMap.getOrDefault(facilityId, facilityId))
-                    .totalEvents(events)
-                    .totalEnrollments(patients)
-                    .activeDeviations(deviations)
+                    .facilityId(fs.getFacilityId())
+                    .facilityName(fs.getFacilityName() != null ? fs.getFacilityName() : fs.getFacilityId())
+                    .totalEvents(fs.getTotalEvents())
+                    .totalEnrollments(fs.getTotalEnrollments())
+                    .activeDeviations(fs.getTotalDeviations())
                     .complianceRate(complianceRate)
                     .build();
         }).collect(Collectors.toList());

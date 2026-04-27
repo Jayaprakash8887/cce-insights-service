@@ -8,13 +8,16 @@ import org.openphc.cce.insights.domain.entity.Deviation;
 import org.openphc.cce.insights.domain.entity.EventLog;
 import org.openphc.cce.insights.domain.entity.ProtocolDefinition;
 import org.openphc.cce.insights.domain.entity.ProtocolInstance;
+import org.openphc.cce.insights.domain.entity.ProtocolInstanceStats;
 import org.openphc.cce.insights.domain.entity.StepInstance;
 import org.openphc.cce.insights.domain.repository.DeviationRepository;
 import org.openphc.cce.insights.domain.repository.EventLogRepository;
 import org.openphc.cce.insights.domain.repository.ProtocolDefinitionRepository;
 import org.openphc.cce.insights.domain.repository.ProtocolInstanceRepository;
+import org.openphc.cce.insights.domain.repository.ProtocolInstanceStatsRepository;
 import org.openphc.cce.insights.domain.repository.StepInstanceRepository;
 import org.openphc.cce.insights.service.PatientTimelineService;
+import org.openphc.cce.insights.service.ProtocolDefinitionHelper;
 import org.openphc.cce.insights.web.dto.ApiResponse;
 import org.openphc.cce.insights.web.dto.PatientTimelineDto;
 import org.springframework.http.ResponseEntity;
@@ -32,10 +35,12 @@ public class PatientController {
 
     private final PatientTimelineService patientTimelineService;
     private final ProtocolInstanceRepository protocolInstanceRepository;
+    private final ProtocolInstanceStatsRepository protocolInstanceStatsRepository;
     private final StepInstanceRepository stepInstanceRepository;
     private final DeviationRepository deviationRepository;
     private final EventLogRepository eventLogRepository;
     private final ProtocolDefinitionRepository protocolDefinitionRepository;
+    private final ProtocolDefinitionHelper protocolDefinitionHelper;
     private final ObjectMapper objectMapper;
 
     @GetMapping("/{patientId}/compliance-timeline")
@@ -51,10 +56,15 @@ public class PatientController {
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getProtocolTracking(
             @PathVariable String patientId) {
         List<ProtocolInstance> instances = protocolInstanceRepository.findByPatientId(patientId);
+        List<UUID> ids = instances.stream().map(ProtocolInstance::getId).toList();
+        Map<UUID, ProtocolInstanceStats> statsMap = protocolInstanceStatsRepository.findAllByProtocolInstanceIdIn(ids)
+                .stream().collect(Collectors.toMap(ProtocolInstanceStats::getProtocolInstanceId, s -> s));
+
         List<Map<String, Object>> result = instances.stream().map(pi -> {
-            List<StepInstance> steps = stepInstanceRepository.findByProtocolInstanceId(pi.getId());
-            long completed = steps.stream().filter(s -> s.getCompletedAt() != null).count();
-            double rate = steps.isEmpty() ? 0 : Math.round((double) completed / steps.size() * 100.0) / 100.0;
+            ProtocolInstanceStats s = statsMap.get(pi.getId());
+            long total = s != null ? s.getTotalSteps() : 0;
+            long completed = s != null ? s.getCompletedSteps() : 0;
+            double rate = total > 0 ? Math.round((double) completed / total * 100.0) / 100.0 : 0;
 
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("protocolInstanceId", pi.getId());
@@ -63,7 +73,7 @@ public class PatientController {
             map.put("status", pi.getStatus());
             map.put("complianceRate", rate);
             map.put("stepsCompleted", completed);
-            map.put("totalSteps", steps.size());
+            map.put("totalSteps", total);
             return map;
         }).collect(Collectors.toList());
         return ResponseEntity.ok(ApiResponse.ok(result));
@@ -132,14 +142,10 @@ public class PatientController {
             @RequestParam(required = false) OffsetDateTime endDate,
             @RequestParam(defaultValue = "50") int limit) {
         String subject = "Patient/" + patientId;
-        List<EventLog> events = eventLogRepository.findBySubjectOrderByEventTimeDesc(subject);
+        List<EventLog> events = eventLogRepository.findPatientEventsFiltered(
+                subject, resourceType, source, startDate, endDate, limit);
 
         List<Map<String, Object>> result = events.stream()
-                .filter(e -> resourceType == null || extractResourceType(e.getData()).equals(resourceType))
-                .filter(e -> source == null || source.equals(e.getSource()))
-                .filter(e -> startDate == null || !e.getEventTime().isBefore(startDate))
-                .filter(e -> endDate == null || !e.getEventTime().isAfter(endDate))
-                .limit(limit)
                 .map(e -> {
                     Map<String, Object> map = new LinkedHashMap<>();
                     map.put("eventId", e.getId());
@@ -147,7 +153,7 @@ public class PatientController {
                     map.put("type", e.getType());
                     map.put("eventTime", e.getEventTime());
                     map.put("source", e.getSource());
-                    map.put("resourceType", extractResourceType(e.getData()));
+                    map.put("resourceType", e.getResourceType());
                     map.put("processingStatus", e.getProcessingStatus());
                     map.put("facilityId", e.getFacilityId());
                     if (e.getProtocolInstanceId() != null)
@@ -174,23 +180,22 @@ public class PatientController {
         Map<String, String> stepTitles = new HashMap<>();
         for (ProtocolInstance pi : instances) {
             if (pi.getProtocolDefinitionId() != null) {
-                resolveStepTitles(pi.getProtocolDefinitionId(), stepTitles);
+                stepTitles.putAll(protocolDefinitionHelper.resolveStepTitles(pi.getProtocolDefinitionId()));
             }
         }
 
-        // Build stepInstanceId→actionId lookup
+        // Batch-load all steps for all instances (single query)
+        List<UUID> instanceIds = instances.stream().map(ProtocolInstance::getId).toList();
         Map<UUID, String> stepActionIds = new HashMap<>();
-        for (ProtocolInstance pi : instances) {
-            for (StepInstance si : stepInstanceRepository.findByProtocolInstanceId(pi.getId())) {
-                stepActionIds.put(si.getId(), si.getActionId());
-            }
+        for (StepInstance si : stepInstanceRepository.findByProtocolInstanceIdIn(instanceIds)) {
+            stepActionIds.put(si.getId(), si.getActionId());
         }
 
         List<Map<String, Object>> result = instances.stream()
                 .flatMap(pi -> deviationRepository.findByProtocolInstanceId(pi.getId()).stream()
                         .map(d -> {
                             String actionId = stepActionIds.get(d.getStepInstanceId());
-                            String stepName = actionId != null ? stepTitles.getOrDefault(actionId, formatActionId(actionId)) : null;
+                            String stepName = actionId != null ? stepTitles.getOrDefault(actionId, ProtocolDefinitionHelper.formatActionId(actionId)) : null;
                             Map<String, Object> metadata = parseMetadata(d.getMetadata());
                             String description = buildDescription(d.getDeviationType().name(), stepName, metadata, stepTitles);
                             Map<String, Object> map = new LinkedHashMap<>();
@@ -218,35 +223,6 @@ public class PatientController {
         return ResponseEntity.ok(ApiResponse.ok(result));
     }
 
-    private void resolveStepTitles(UUID protocolDefinitionId, Map<String, String> titles) {
-        try {
-            ProtocolDefinition pd = protocolDefinitionRepository.findById(protocolDefinitionId).orElse(null);
-            if (pd != null && pd.getDefinition() != null) {
-                JsonNode root = objectMapper.readTree(pd.getDefinition());
-                JsonNode actionNodes = root.get("action");
-                if (actionNodes != null && actionNodes.isArray()) {
-                    for (JsonNode action : actionNodes) {
-                        String id = action.has("id") ? action.get("id").asText() : null;
-                        String title = action.has("title") ? action.get("title").asText() : null;
-                        if (id != null && title != null) {
-                            titles.putIfAbsent(id, title);
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Failed to parse protocol definition {}: {}", protocolDefinitionId, e.getMessage());
-        }
-    }
-
-    private String formatActionId(String actionId) {
-        if (actionId == null) return "Unknown Step";
-        return Arrays.stream(actionId.split("-"))
-                .map(w -> w.substring(0, 1).toUpperCase() + w.substring(1))
-                .reduce((a, b) -> a + " " + b)
-                .orElse(actionId);
-    }
-
     @SuppressWarnings("unchecked")
     private Map<String, Object> parseMetadata(String metadata) {
         if (metadata == null || metadata.isBlank()) return Map.of();
@@ -269,11 +245,11 @@ public class PatientController {
                         ? (List<String>) metadata.get("incompletePrerequisites")
                         : List.of();
                 String completedName = completedActionId != null
-                        ? stepTitles.getOrDefault(completedActionId, formatActionId(completedActionId))
+                        ? stepTitles.getOrDefault(completedActionId, ProtocolDefinitionHelper.formatActionId(completedActionId))
                         : step;
                 if (!prereqs.isEmpty()) {
                     String prereqNames = prereqs.stream()
-                            .map(id -> stepTitles.getOrDefault(id, formatActionId(id)))
+                            .map(id -> stepTitles.getOrDefault(id, ProtocolDefinitionHelper.formatActionId(id)))
                             .reduce((a, b) -> a + ", " + b)
                             .orElse("");
                     return completedName + " completed before " + prereqNames;
@@ -286,16 +262,5 @@ public class PatientController {
             default:
                 return step;
         }
-    }
-
-    private String extractResourceType(String data) {
-        if (data == null) return "Unknown";
-        int idx = data.indexOf("\"resourceType\"");
-        if (idx < 0) return "Unknown";
-        int colon = data.indexOf(':', idx);
-        int quote1 = data.indexOf('"', colon + 1);
-        int quote2 = data.indexOf('"', quote1 + 1);
-        if (quote1 >= 0 && quote2 > quote1) return data.substring(quote1 + 1, quote2);
-        return "Unknown";
     }
 }

@@ -1,9 +1,6 @@
 package org.openphc.cce.insights.service;
 
 import lombok.RequiredArgsConstructor;
-import org.openphc.cce.insights.domain.entity.ProtocolInstance;
-import org.openphc.cce.insights.domain.entity.StepInstance;
-import org.openphc.cce.insights.domain.enums.StepState;
 import org.openphc.cce.insights.domain.repository.DeviationRepository;
 import org.openphc.cce.insights.domain.repository.EventLogRepository;
 import org.openphc.cce.insights.domain.repository.ProtocolInstanceRepository;
@@ -28,15 +25,21 @@ public class PatientRiskService {
     private final StepInstanceRepository stepInstanceRepository;
     private final EventLogRepository eventLogRepository;
 
-    @Cacheable(value = "analytics", key = "'risk-hotspots'")
+    @Cacheable(value = "analytics", key = "'risk-hotspots-' + #startDate + '-' + #endDate")
     public List<AtRiskHotspotDto> getAtRiskHotspots(OffsetDateTime startDate, OffsetDateTime endDate) {
-        // Build facility -> set of patient IDs mapping
-        List<Object[]> facilityPatientRows = eventLogRepository.findFacilityPatientMapping();
-        Map<String, Set<String>> facilityPatients = new LinkedHashMap<>();
-        for (Object[] row : facilityPatientRows) {
+        // Single query: get patient risk status grouped by facility
+        List<Object[]> riskRows = stepInstanceRepository.findPatientRiskByFacility();
+
+        // Aggregate per facility
+        Map<String, long[]> facilityCounts = new LinkedHashMap<>(); // [onTrack, atRisk, nonCompliant]
+        for (Object[] row : riskRows) {
             String facilityId = (String) row[0];
-            String patientId = (String) row[1];
-            facilityPatients.computeIfAbsent(facilityId, k -> new LinkedHashSet<>()).add(patientId);
+            boolean hasMissed = (Boolean) row[2];
+            boolean hasOverdue = (Boolean) row[3];
+            long[] counts = facilityCounts.computeIfAbsent(facilityId, k -> new long[3]);
+            if (hasMissed) counts[2]++;
+            else if (hasOverdue) counts[1]++;
+            else counts[0]++;
         }
 
         // Build facility name lookup
@@ -45,30 +48,12 @@ public class PatientRiskService {
             facilityNameMap.put((String) row[0], (String) row[1]);
         }
 
-        // Build patient -> steps mapping (global, loaded once)
-        List<ProtocolInstance> allInstances = protocolInstanceRepository.findAll();
-        Map<String, List<StepInstance>> patientSteps = new HashMap<>();
-        for (ProtocolInstance pi : allInstances) {
-            List<StepInstance> steps = stepInstanceRepository.findByProtocolInstanceId(pi.getId());
-            patientSteps.computeIfAbsent(pi.getPatientId(), k -> new ArrayList<>()).addAll(steps);
-        }
-
-        // For each facility, categorize only its own patients
-        return facilityPatients.entrySet().stream().map(entry -> {
+        return facilityCounts.entrySet().stream().map(entry -> {
             String facilityId = entry.getKey();
-            Set<String> patients = entry.getValue();
-            long onTrack = 0, atRisk = 0, nonCompliant = 0;
-
-            for (String patientId : patients) {
-                List<StepInstance> steps = patientSteps.getOrDefault(patientId, Collections.emptyList());
-                boolean hasMissed = steps.stream().anyMatch(s -> s.getState() == StepState.MISSED);
-                boolean hasOverdue = steps.stream().anyMatch(s -> s.getState() == StepState.OVERDUE);
-                if (hasMissed) nonCompliant++;
-                else if (hasOverdue) atRisk++;
-                else onTrack++;
-            }
-
+            long[] c = entry.getValue();
+            long onTrack = c[0], atRisk = c[1], nonCompliant = c[2];
             long totalPatients = onTrack + atRisk + nonCompliant;
+
             return AtRiskHotspotDto.builder()
                     .facilityId(facilityId)
                     .facilityName(facilityNameMap.getOrDefault(facilityId, facilityId))
@@ -89,7 +74,7 @@ public class PatientRiskService {
         }).collect(Collectors.toList());
     }
 
-    @Cacheable(value = "analytics", key = "'repeat-deviations-' + #minDeviations")
+    @Cacheable(value = "analytics", key = "'repeat-deviations-' + #minDeviations + '-' + #startDate + '-' + #endDate")
     public List<RepeatDeviationPatientDto> getRepeatDeviationPatients(int minDeviations,
                                                                        OffsetDateTime startDate,
                                                                        OffsetDateTime endDate) {

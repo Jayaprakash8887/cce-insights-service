@@ -68,7 +68,7 @@ public class ProtocolAnalyticsService {
                         "Protocol definition not found: " + protocolDefinitionId));
 
         List<Object[]> rows = stepInstanceRepository.findCompletionFunnel(protocolDefinitionId);
-        long totalEnrollments = protocolInstanceRepository.findByProtocolDefinitionId(protocolDefinitionId).size();
+        long totalEnrollments = protocolInstanceRepository.countByProtocolDefinitionId(protocolDefinitionId);
 
         List<CompletionFunnelDto.FunnelStep> funnel = new ArrayList<>();
         int order = 1;

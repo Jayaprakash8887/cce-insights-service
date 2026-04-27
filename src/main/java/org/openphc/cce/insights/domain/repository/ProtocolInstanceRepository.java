@@ -22,6 +22,8 @@ public interface ProtocolInstanceRepository extends ReadOnlyRepository<ProtocolI
 
     List<ProtocolInstance> findByProtocolDefinitionId(UUID protocolDefinitionId);
 
+    long countByProtocolDefinitionId(UUID protocolDefinitionId);
+
     Page<ProtocolInstance> findByProtocolDefinitionId(UUID protocolDefinitionId, Pageable pageable);
 
     @Query("SELECT pi.status, COUNT(pi) FROM ProtocolInstance pi " +

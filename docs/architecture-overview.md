@@ -126,7 +126,7 @@ src/main/java/org/openphc/cce/insights/
 ├── config/
 │   ├── CacheConfig.java                       # Caffeine cache configuration (3-tier: lookups/analytics/metrics)
 │   ├── JpaConfig.java                         # Read-only transaction defaults
-│   ├── MetricsConfig.java                     # Custom Micrometer metrics
+│   ├── MetricsConfig.java                     # Micrometer configuration (timer beans removed; use @Timed or point-of-use Timer.builder)
 │   └── ObservabilityConfig.java               # Observability configuration
 ├── domain/
 │   ├── entity/
@@ -145,8 +145,7 @@ src/main/java/org/openphc/cce/insights/
 │   └── repository/
 │       ├── ReadOnlyRepository.java            # Base repo (no save/delete)
 │       ├── ProtocolDefinitionRepository.java
-│       ├── ProtocolInstanceRepository.java
-│       ├── StepInstanceRepository.java
+│       ├── ProtocolInstanceRepository.java│       ├── ProtocolInstanceStatsRepository.java   # Read-only (extends ReadOnlyRepository for @Immutable entity)│       ├── StepInstanceRepository.java
 │       ├── DeviationRepository.java
 │       ├── EventLogRepository.java
 │       └── InboundEventRepository.java        # Ingestion pipeline queries
@@ -163,7 +162,8 @@ src/main/java/org/openphc/cce/insights/
 │   ├── ProcessingQualityService.java          # Event processing quality (MATCHED/ZERO_MATCH/DUPLICATE)
 │   ├── IngestionAnalyticsService.java         # Ingestion funnel, rejections, source quality, pipeline loss
 │   ├── ExportService.java                     # CSV/JSON export generation
-│   └── DateUtil.java                          # Shared interval mapping, date extraction & type conversion utility
+│   ├── ProtocolDefinitionHelper.java          # Shared helper: resolveOrderedActions, resolveStepTitles, formatActionId (cached)
+│   └── DateUtil.java                          # Shared interval mapping & validation, date extraction & type conversion
 ├── web/
 │   ├── GlobalExceptionHandler.java            # @ControllerAdvice error handling (with logging)
 │   ├── controller/
@@ -386,7 +386,7 @@ The Insights Service uses **Caffeine** for in-memory response caching, organized
 
 **Configuration:** TTLs are configurable via environment variables `CACHE_TTL_LOOKUPS`, `CACHE_TTL_ANALYTICS`, `CACHE_TTL_METRICS` (in minutes).
 
-**Cache annotations:** `@Cacheable` is applied to 25 service methods across 9 service classes. Cache keys are derived from method parameters (date ranges, filters, IDs).
+**Cache annotations:** `@Cacheable` is applied to 25 service methods across 9 service classes. Cache keys are derived from method parameters (date ranges, filters, IDs). All cache keys include relevant date-range and filter parameters to prevent stale cross-query cache hits.
 
 ### Phased Architecture
 
@@ -652,3 +652,29 @@ JOIN inbound_event b ON a.subject = b.subject
 WHERE a.source = :sourceA AND b.source = :sourceB
 GROUP BY a.subject;
 ```
+
+---
+
+## 10. Optimization Notes
+
+### Shared Utilities (`ProtocolDefinitionHelper`)
+Protocol definition JSON parsing (action lists, step titles, formatActionId) is consolidated into `ProtocolDefinitionHelper` — a cached `@Component` shared by `PatientTimelineService` and `PatientController`. Previously duplicated across both classes.
+
+### N+1 Query Fix (Patient Deviations)
+`PatientController.getPatientDeviations()` now uses `StepInstanceRepository.findByProtocolInstanceIdIn()` for batch loading of step instances across all protocol instances, replacing the previous per-instance loop.
+
+### SQL-Pushed Filtering (Patient Events)
+`PatientController.getPatientEvents()` now uses `EventLogRepository.findPatientEventsFiltered()` to apply resourceType, source, date range, and limit filters at the SQL level, replacing Java-side `Stream.filter()` + `.limit()`.
+
+### COUNT Query (Completion Funnel)
+`ProtocolAnalyticsService.getCompletionFunnel()` uses `countByProtocolDefinitionId()` instead of loading the full entity list to count enrollments.
+
+### Interval Validation
+`DateUtil.mapInterval()` now validates the interval parameter and throws `IllegalArgumentException` for invalid values, which the `GlobalExceptionHandler` maps to HTTP 400.
+
+### Cache Key Completeness
+All `@Cacheable` keys now include all relevant query parameters (startDate, endDate, facilityId, etc.) to prevent stale cache hits when parameters differ.
+
+### Known Limitations
+- **FacilityRankingService:** Accepts `startDate`/`endDate` parameters but `facility_stats` is a materialized view that aggregates all-time data. Date filtering requires view redesign.
+- **EventVolumeController:** Some parameters (`facilityId`, `source`, `cursor`) are accepted by endpoints but not yet wired through to the service layer.

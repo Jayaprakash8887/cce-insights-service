@@ -18,7 +18,7 @@ public class ProcessingQualityService {
 
     private final EventLogRepository eventLogRepository;
 
-    @Cacheable(value = "analytics", key = "'processing-quality'")
+    @Cacheable(value = "analytics", key = "'processing-quality-' + #startDate + '-' + #endDate")
     public ProcessingQualityDto getProcessingQuality(OffsetDateTime startDate, OffsetDateTime endDate) {
         List<Object[]> statusRows = eventLogRepository.countByProcessingStatus(null, startDate, endDate);
         List<Object[]> sourceRows = eventLogRepository.findProcessingQualityBySource(null, null, startDate, endDate);

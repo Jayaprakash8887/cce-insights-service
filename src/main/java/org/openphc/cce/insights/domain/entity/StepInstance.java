@@ -57,6 +57,9 @@ public class StepInstance {
     @JoinColumn(name = "protocol_instance_id", insertable = false, updatable = false)
     private ProtocolInstance protocolInstance;
 
+    @Column(name = "facility_id")
+    private String facilityId;
+
     protected StepInstance() {
     }
 }
